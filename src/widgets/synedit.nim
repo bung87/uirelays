@@ -136,7 +136,7 @@ type
     cursor: Natural
     # Line tracking
     firstLine*, currentLine*, numberOfLines: Natural
-    firstLineOffset: Natural
+    firstLineOffset*: Natural
     span*: int
     desiredCol: Natural
     # Selection
@@ -181,6 +181,8 @@ type
     markers: seq[Marker]
     # Line decorations (breakpoints, active execution line, etc.)
     lineDecorations: seq[LineDecoration]
+    # Full-width line background decorations (diff highlights, etc.)
+    lineBgDecorations: seq[LineDecoration]
     # Cache
     offsetToLineCache: array[20, tuple[version, offset, line: int]]
 
@@ -1059,7 +1061,7 @@ proc downFirstLineOffset(s: var SynEdit) =
   while s[i] != '\L': inc i
   s.firstLineOffset = i + 1
 
-proc scrollLines(s: var SynEdit; amount: int) =
+proc scrollLines*(s: var SynEdit; amount: int) =
   let oldFirstLine = s.firstLine
   s.firstLine = clamp(s.firstLine.int + amount, 0, max(0, s.numberOfLines.int - 1)).Natural
   var a = s.firstLine.int - oldFirstLine.int
@@ -1990,6 +1992,29 @@ proc clearLineDecorations*(s: var SynEdit) =
   ## Remove all line decorations.
   s.lineDecorations.setLen 0
 
+# ---------------------------------------------------------------------------
+# Full-width line background decorations
+# ---------------------------------------------------------------------------
+
+proc setLineBgDecoration*(s: var SynEdit; line: int; color: Color) =
+  ## Set a full-width background color for the given line number.
+  for i in 0 ..< s.lineBgDecorations.len:
+    if s.lineBgDecorations[i].line == line:
+      s.lineBgDecorations[i].color = color
+      return
+  s.lineBgDecorations.add LineDecoration(line: line, color: color)
+
+proc clearLineBgDecoration*(s: var SynEdit; line: int) =
+  ## Remove the background decoration for a specific line.
+  for i in 0 ..< s.lineBgDecorations.len:
+    if s.lineBgDecorations[i].line == line:
+      s.lineBgDecorations.del(i)
+      return
+
+proc clearLineBgDecorations*(s: var SynEdit) =
+  ## Remove all full-width line background decorations.
+  s.lineBgDecorations.setLen 0
+
 const
   CharBufSize = 80
 
@@ -2285,6 +2310,14 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
           fillRect(rect(area.x, dim.y, 3, lineH), ld.color)
           break
       discard drawText(s.font, area.x + 2, dim.y, num, numColor, numBg)
+
+    # Draw full-width line background if decorated
+    for ld in s.lineBgDecorations:
+      if ld.line == renderLine.int:
+        let bgX = area.x
+        let bgW = endX - bgX
+        fillRect(rect(bgX, dim.y, bgW, lineH), ld.color)
+        break
 
     i = s.drawTextLine(i, dim, blink)
     inc s.span

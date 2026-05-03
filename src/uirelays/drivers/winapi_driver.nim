@@ -167,6 +167,7 @@ const
   VK_F12 = 0x7B'u32
   VK_OEM_COMMA = 0xBC'u32
   VK_OEM_PERIOD = 0xBE'u32
+  VK_OEM_2 = 0xBF'u32
   VK_SHIFT = 0x10'u32
   VK_CONTROL = 0x11'u32
   VK_MENU = 0x12'u32   # Alt

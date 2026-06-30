@@ -2272,7 +2272,7 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
 
   s.cursorDim.h = 0
   let endY = area.y + area.h - 1
-  let endX = area.x + area.w - (if hasScrollBar: ScrollBarWidth else: 0) - 1
+  let endX = area.x + area.w - ScrollBarWidth - 1
   var dim = area
   dim.w = endX
   dim.h = endY
@@ -2340,11 +2340,12 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
         if a == b: s.selected = (a, -1)
         else: s.selected = (a, b - 1)
 
-  # draw scrollbar
+  # draw scrollbar track (always visible to reserve space)
+  let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
+                       ScrollBarWidth, area.h)
+  fillRect(trackRect, s.theme.scrollTrackColor)
+  # draw scrollbar grip when content overflows
   if hasScrollBar:
-    let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
-                         ScrollBarWidth, area.h)
-    fillRect(trackRect, s.theme.scrollTrackColor)
     let finalGrip = s.scrollGrip(area, lineH)
     let gripColor = if s.scrollGrabbed: s.theme.scrollBarActiveColor
                     else: s.theme.scrollBarColor
@@ -2356,6 +2357,8 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   let lineH = fontLineSkip(s.font)
   let grip = s.scrollGrip(area, lineH)
   let hasScrollBar = s.scrollEnabled
+  let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
+                       ScrollBarWidth, area.h)
 
   case e.kind
   of TextInputEvent:
@@ -2443,7 +2446,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     if hasScrollBar and grip.contains(point(e.x, e.y)):
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
-    elif area.contains(point(e.x, e.y)):
+    elif area.contains(point(e.x, e.y)) and not trackRect.contains(point(e.x, e.y)):
       if LinkMod in e.mods:
         s.setCursorFromMouse(e.x, e.y, 1)
       elif e.clicks >= 3:
@@ -2462,7 +2465,8 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     s.mouseDragging = false
 
   of MouseMoveEvent:
-    if (LinkMod in e.mods) and area.contains(point(e.x, e.y)):
+    if (LinkMod in e.mods) and area.contains(point(e.x, e.y)) and
+       not trackRect.contains(point(e.x, e.y)):
       s.probeX = e.x
       s.probeY = e.y
       s.probeActive = true
@@ -2504,7 +2508,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
 
   # After rendering, probe and click positions have been resolved.
   if e.kind == MouseDownEvent and (LinkMod in e.mods) and
-     area.contains(point(e.x, e.y)):
+     area.contains(point(e.x, e.y)) and not trackRect.contains(point(e.x, e.y)):
     result = EditAction(kind: ctrlClick, pos: s.cursor.int)
   elif s.probeActive and s.probeResult >= 0:
     result = EditAction(kind: ctrlHover, pos: s.probeResult)

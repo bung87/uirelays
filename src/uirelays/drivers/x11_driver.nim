@@ -770,7 +770,7 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gTargets = XInternAtom(gDisplay, "TARGETS", 0)
   gClipProperty = XInternAtom(gDisplay, "NIMEDIT_CLIP", 0)
 
-  discard XStoreName(gDisplay, gWindow, "Drift Editor")
+  discard XStoreName(gDisplay, gWindow, "NimEdit")
   discard XMapWindow(gDisplay, gWindow)
   discard XFlush(gDisplay)
 

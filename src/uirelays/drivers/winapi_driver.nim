@@ -5,7 +5,7 @@
 import ../coords, ../input, ../screen
 import std/[widestrs, strutils, os]
 
-{.passL: "-lgdi32 -luser32 -lkernel32".}
+{.passL: "-lgdi32 -luser32 -lkernel32 -lgdiplus -lmsimg32".}
 
 # ---- Win32 type definitions ----
 
@@ -96,6 +96,23 @@ type
 
   SIZE {.pure.} = object
     cx, cy: LONG
+
+# ---- GDI+ types ----
+  GpStatus = int32
+  GpBitmap = pointer
+  GpImage = pointer
+  GpGraphics = pointer
+
+  GdiplusStartupInput {.pure.} = object
+    GdiplusVersion: uint32
+    DebugEventCallback: pointer
+    SuppressBackgroundThread: BOOL
+    SuppressExternalCodecs: BOOL
+
+  ColorPalette {.pure.} = object
+    Flags: uint32
+    Count: uint32
+    Entries: array[1, COLORREF]
 
 # ---- Win32 constants ----
 
@@ -314,6 +331,54 @@ proc CreateRectRgn(x1, y1, x2, y2: int32): HRGN
   {.stdcall, dynlib: "gdi32", importc.}
 proc AddFontResourceExW(name: ptr uint16; fl: DWORD; res: pointer): int32
   {.stdcall, dynlib: "gdi32", importc.}
+
+# ---- GDI+ imports ----
+proc GdiplusStartup(token: ptr uint32; input: pointer; output: pointer): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdiplusShutdown(token: uint32) {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipCreateBitmapFromFile(wFileName: ptr uint16; bitmap: ptr GpBitmap): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipDisposeImage(image: pointer): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipGetImageWidth(image: pointer; width: ptr uint32): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipGetImageHeight(image: pointer; height: ptr uint32): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipCreateFromHDC(hdc: HDC; graphics: ptr GpGraphics): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipDeleteGraphics(graphics: GpGraphics): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipDrawImageRectRect(graphics: GpGraphics; image: pointer;
+  dstX, dstY, dstWidth, dstHeight: float32;
+  srcX, srcY, srcWidth, srcHeight: float32;
+  srcUnit: int32; imageAttributes: pointer;
+  callback: pointer; callbackData: pointer): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipCreateHBITMAPFromBitmap(bitmap: GpBitmap; hbmReturn: ptr HBITMAP;
+  background: COLORREF): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipCreateBitmapFromGraphics(width, height: int32;
+  graphics: GpGraphics; bitmap: ptr GpBitmap): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+
+# ---- AlphaBlend (msimg32) ----
+proc AlphaBlend(hdcDst: HDC; xoriginDest, yoriginDest, wDest, hDest: int32;
+  hdcSrc: HDC; xoriginSrc, yoriginSrc, wSrc, hSrc: int32;
+  blend: pointer): BOOL
+  {.stdcall, dynlib: "msimg32", importc.}
+
+# ---- GDI+ image slot management ----
+const MAX_GDI_IMAGES = 256
+
+type
+  ImageSlot = object
+    bitmap: GpBitmap
+    width, height: int32
+
+var
+  gdiplusToken: uint32
+  imageSlots: array[MAX_GDI_IMAGES, ImageSlot]
+  imageCount: int
 
 # ---- Helpers ----
 
@@ -882,6 +947,55 @@ proc winQuitRequest() =
   if gHwnd != nil:
     discard DestroyWindow(gHwnd)
 
+# ---- Image management ----
+
+proc winLoadImage(path: string): screen.Image =
+  if path.len == 0 or imageCount >= MAX_GDI_IMAGES:
+    return screen.Image(0)
+  let wpath = newWideCString(path)
+  var bmp: GpBitmap = nil
+  let status = GdipCreateBitmapFromFile(cast[ptr uint16](wpath[0].addr), addr bmp)
+  if status != 0 or bmp == nil:
+    return screen.Image(0)
+  var w, h: uint32
+  discard GdipGetImageWidth(bmp, addr w)
+  discard GdipGetImageHeight(bmp, addr h)
+  let idx = imageCount
+  imageSlots[idx] = ImageSlot(bitmap: bmp, width: w.int32, height: h.int32)
+  inc imageCount
+  return screen.Image(idx + 1) # 1-based
+
+proc winFreeImage(img: screen.Image) =
+  let idx = img.int - 1
+  if idx >= 0 and idx < imageCount and imageSlots[idx].bitmap != nil:
+    discard GdipDisposeImage(imageSlots[idx].bitmap)
+    imageSlots[idx].bitmap = nil
+
+proc winDrawImage(img: screen.Image; src, dst: coords.Rect) =
+  let idx = img.int - 1
+  if idx < 0 or idx >= imageCount or imageSlots[idx].bitmap == nil: return
+  if gBackDC == nil: return
+
+  var graphics: GpGraphics = nil
+  if GdipCreateFromHDC(gBackDC, addr graphics) != 0 or graphics == nil: return
+
+  let slot = imageSlots[idx]
+  # Clamp source rect to image bounds
+  let srcX = max(0, src.x).float32
+  let srcY = max(0, src.y).float32
+  let srcW = min(src.w.float32, slot.width.float32 - srcX)
+  let srcH = min(src.h.float32, slot.height.float32 - srcY)
+  if srcW <= 0 or srcH <= 0:
+    discard GdipDeleteGraphics(graphics)
+    return
+
+  discard GdipDrawImageRectRect(graphics, slot.bitmap,
+    dst.x.float32, dst.y.float32, dst.w.float32, dst.h.float32,
+    srcX, srcY, srcW, srcH,
+    2, # UnitPixel
+    nil, nil, nil)
+  discard GdipDeleteGraphics(graphics)
+
 # ---- Init ----
 
 proc setDpiAware() =
@@ -904,6 +1018,11 @@ proc setDpiAware() =
 
 proc initWinapiDriver*() =
   setDpiAware()
+
+  # Initialize GDI+
+  var input = GdiplusStartupInput(GdiplusVersion: 1)
+  discard GdiplusStartup(addr gdiplusToken, addr input, nil)
+
   windowRelays = WindowRelays(
     createWindow: winCreateWindow, refresh: winRefresh,
     saveState: winSaveState, restoreState: winRestoreState,
@@ -914,7 +1033,8 @@ proc initWinapiDriver*() =
     getFontMetrics: winGetFontMetrics, measureText: winMeasureText,
     drawText: winDrawText)
   drawRelays = DrawRelays(
-    fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint)
+    fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint,
+    loadImage: winLoadImage, freeImage: winFreeImage, drawImage: winDrawImage)
   inputRelays = InputRelays(
     pollEvent: winPollEvent, waitEvent: winWaitEvent,
     getTicks: winGetTicks, sleep: winDelay,

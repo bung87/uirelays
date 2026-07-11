@@ -996,7 +996,7 @@ proc winCreateImage(data: pointer; w, h: int): screen.Image =
   if data == nil or w <= 0 or h <= 0 or imageCount >= MAX_GDI_IMAGES:
     return screen.Image(0)
   # Pixie stores premultiplied-alpha RGBA as ColorRGBX(r,g,b,a).
-  # CreateDIBSection needs BGRA in a BITMAPINFO with BI_BITFIELDS.
+  # GDI+ PixelFormat32bppPARGB expects BGRA byte order in memory.
   let size = w * h * 4
   var bgra = newSeq[uint8](size)
   let src = cast[ptr UncheckedArray[uint8]](data)
@@ -1005,25 +1005,10 @@ proc winCreateImage(data: pointer; w, h: int): screen.Image =
     bgra[i * 4 + 1] = src[i * 4 + 1] # G
     bgra[i * 4 + 2] = src[i * 4 + 0] # R
     bgra[i * 4 + 3] = src[i * 4 + 3] # A
-  # BITMAPINFOHEADER - BI_RGB (0) with 32bpp = BGRA byte order
-  var bmi: array[10, uint32]
-  bmi[0] = 40                       # biSize
-  bmi[1] = w.uint32                 # biWidth
-  bmi[2] = cast[uint32](-h)         # biHeight (negative = top-down)
-  bmi[3] = 1 or (32 shl 16)         # biPlanes=1, biBitCount=32
-  bmi[4] = 0                        # biCompression = BI_RGB
-  var bits: pointer = nil
-  let screenDC = GetDC(cast[HWND](0))
-  let hbm = CreateDIBSection(screenDC, addr bmi[0],
-    0, addr bits, nil, 0)
-  discard ReleaseDC(cast[HWND](0), screenDC)
-  if hbm == nil or bits == nil:
-    return screen.Image(0)
-  copyMem(bits, addr bgra[0], size)
-  # Convert HBITMAP -> GpBitmap via GDI+
   var bmp: GpBitmap = nil
-  let status = GdipCreateBitmapFromHBITMAP(hbm, nil, addr bmp)
-  discard DeleteObject(hbm)
+  # PixelFormat32bppPARGB (premultiplied) = 0x26200B
+  let status = GdipCreateBitmapFromScan0(w.int32, h.int32, (w * 4).int32,
+    0x26200B, addr bgra[0], addr bmp)
   if status != 0 or bmp == nil:
     return screen.Image(0)
   let idx = imageCount

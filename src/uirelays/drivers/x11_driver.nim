@@ -177,6 +177,10 @@ type
     ascent: cint
     descent: cint
     height: cint
+
+  XClassHint {.pure.} = object
+    res_name: cstring
+    res_class: cstring
     max_advance_width: cint
     charset: pointer
     pattern: pointer
@@ -350,6 +354,8 @@ proc XPending(dpy: pointer): cint
 proc XFlush(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XStoreName(dpy: pointer; w: XID; name: cstring): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XSetClassHint(dpy: pointer; w: XID; classHint: ptr XClassHint): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XInternAtom(dpy: pointer; name: cstring; onlyIfExists: XBool): Atom
   {.cdecl, dynlib: libX11, importc.}
@@ -750,14 +756,23 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gWmDeleteWindow = XInternAtom(gDisplay, "WM_DELETE_WINDOW", 0)
   discard XSetWMProtocols(gDisplay, gWindow, addr gWmDeleteWindow, 1)
 
+  # Set WM_CLASS for WSLg/Wayland compositors
+  var className = "drift"
+  var instanceName = "drift"
+  var classHint = XClassHint(
+    res_name: cast[cstring](addr instanceName[0]),
+    res_class: cast[cstring](addr className[0]))
+  discard XSetClassHint(gDisplay, gWindow, addr classHint)
+
   # Clipboard atoms
   gClipboard = XInternAtom(gDisplay, "CLIPBOARD", 0)
   gUtf8String = XInternAtom(gDisplay, "UTF8_STRING", 0)
   gTargets = XInternAtom(gDisplay, "TARGETS", 0)
   gClipProperty = XInternAtom(gDisplay, "NIMEDIT_CLIP", 0)
 
-  discard XStoreName(gDisplay, gWindow, "NimEdit")
+  discard XStoreName(gDisplay, gWindow, "Drift Editor")
   discard XMapWindow(gDisplay, gWindow)
+  discard XFlush(gDisplay)
 
   gGC = XCreateGC(gDisplay, gWindow, 0, nil)
 

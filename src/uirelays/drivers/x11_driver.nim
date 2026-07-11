@@ -5,7 +5,7 @@
 import ../coords, ../input, ../screen
 import std/[strutils, os]
 
-{.passL: "-lX11 -lXft".}
+{.passL: "-lX11 -lXft -lpng".}
 
 # ---- X11 type definitions ----
 
@@ -409,6 +409,73 @@ proc XftDrawSetClipRectangles(draw: pointer; x, y: cint;
   {.cdecl, dynlib: libXft, importc.}
 proc XftDrawSetClip(draw: pointer; region: pointer): XBool
   {.cdecl, dynlib: libXft, importc.}
+
+# ---- XImage imports ----
+
+type
+  XImage {.pure.} = object
+    width, height: cint
+    xoffset: cint
+    format: cint
+    data: pointer
+    byteOrder: cint
+    bitmapUnit, bitmapBitOrder, bitmapPad: cint
+    depth, bytesPerLine, bitsPerPixel: cint
+
+proc XCreateImage(dpy: pointer; visual: pointer; depth: cuint;
+  format: cint; offset: cint; data: pointer; width, height: cint;
+  bitmapPad, bytesPerLine: cint): ptr XImage
+  {.cdecl, dynlib: libX11, importc.}
+proc XDestroyImage(img: ptr XImage): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XPutImage(dpy: pointer; drawable: XID; gc: pointer;
+  src: ptr XImage; srcX, srcY, dstX, dstY: cint; w, h: cuint): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XGetImage(dpy: pointer; drawable: XID; x, y: cint;
+  w, h: cuint; planeMask: culong; format: cint): ptr XImage
+  {.cdecl, dynlib: libX11, importc.}
+proc XCompositeRedirectWindow(dpy: pointer; window: XID; update: cint): cint
+  {.cdecl, dynlib: "libXcomposite.so(|.1)", importc.}
+proc XRenderCreatePicture(dpy: pointer; drawable: XID;
+  format: pointer; valuemask: culong; attributes: pointer): culong
+  {.cdecl, dynlib: "libXrender.so(|.1)", importc.}
+
+# ---- libpng imports ----
+proc png_create_read_struct(userError, userError2, errPtr, warnPtr: pointer): pointer
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc: "png_create_read_struct".}
+proc png_create_info_struct(pngPtr: pointer): pointer
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_init_io(pngPtr, fp: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_read_info(pngPtr, infoPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_set_expand(pngPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_set_gray_to_rgb(pngPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_set_strip_16(pngPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_set_packing(pngPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_read_update_info(pngPtr, infoPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_read_image(pngPtr: pointer; rowPointers: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_read_end(pngPtr, infoPtr: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_destroy_read_struct(pngPtr, infoPtr, endInfo: pointer)
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_get_image_width(pngPtr, infoPtr: pointer): uint32
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_get_image_height(pngPtr, infoPtr: pointer): uint32
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_get_color_type(pngPtr, infoPtr: pointer): uint8
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+proc png_get_bit_depth(pngPtr, infoPtr: pointer): uint8
+  {.cdecl, dynlib: "libpng16.so(|.16)", importc.}
+
+proc fopen(path, mode: cstring): pointer {.cdecl, importc, header: "<stdio.h>".}
+proc fclose(fp: pointer): cint {.cdecl, importc, header: "<stdio.h>".}
 
 # ---- Helpers ----
 
@@ -935,6 +1002,120 @@ proc x11QuitRequest() =
     discard XDestroyWindow(gDisplay, gWindow)
     discard XCloseDisplay(gDisplay)
 
+# ---- Image management ----
+
+const MAX_IMAGES = 256
+
+type
+  ImageSlot = object
+    pixels: seq[uint8]   # RGBA pixel data
+    width, height: int
+
+var
+  imageSlots: array[MAX_IMAGES, ImageSlot]
+  imageCount: int
+
+proc x11LoadImage(path: string): screen.Image =
+  if path.len == 0 or imageCount >= MAX_IMAGES:
+    return screen.Image(0)
+  let cpath = cstring(path)
+  let fp = fopen(cpath, "rb")
+  if fp == nil:
+    return screen.Image(0)
+
+  let pngPtr = png_create_read_struct(nil, nil, nil, nil)
+  if pngPtr == nil:
+    discard fclose(fp)
+    return screen.Image(0)
+
+  let infoPtr = png_create_info_struct(pngPtr)
+  if infoPtr == nil:
+    let nullP: pointer = nil
+    png_destroy_read_struct(pngPtr, nullP, nullP)
+    discard fclose(fp)
+    return screen.Image(0)
+
+  png_init_io(pngPtr, fp)
+  png_read_info(pngPtr, infoPtr)
+
+  let w = png_get_image_width(pngPtr, infoPtr).int
+  let h = png_get_image_height(pngPtr, infoPtr).int
+  let colorType = png_get_color_type(pngPtr, infoPtr)
+  let bitDepth = png_get_bit_depth(pngPtr, infoPtr)
+
+  if bitDepth == 8:
+    if colorType == 0: # GRAY
+      png_set_expand(pngPtr)
+      png_set_gray_to_rgb(pngPtr)
+    elif colorType == 2: # RGB
+      discard # ok
+    elif colorType == 3: # PALETTE
+      png_set_expand(pngPtr)
+    elif colorType == 4: # GRAY_ALPHA
+      png_set_expand(pngPtr)
+      png_set_gray_to_rgb(pngPtr)
+    elif colorType == 6: # RGBA
+      discard # ok
+  else:
+    png_set_expand(pngPtr)
+    if colorType in {0, 4}:
+      png_set_gray_to_rgb(pngPtr)
+
+  png_read_update_info(pngPtr, infoPtr)
+
+  var pixels = newSeq[uint8](w * h * 4)
+  var rowPointers = newseq[pointer](h)
+  for y in 0..<h:
+    rowPointers[y] = addr pixels[y * w * 4]
+
+  png_read_image(pngPtr, addr rowPointers[0])
+  png_read_end(pngPtr, nil)
+  let nullP: pointer = nil
+  png_destroy_read_struct(pngPtr, infoPtr, nullP)
+  discard fclose(fp)
+
+  let idx = imageCount
+  imageSlots[idx] = ImageSlot(pixels: pixels, width: w, height: h)
+  inc imageCount
+  return screen.Image(idx + 1)
+
+proc x11FreeImage(img: screen.Image) =
+  let idx = img.int - 1
+  if idx >= 0 and idx < imageCount:
+    imageSlots[idx].pixels = @[]
+    imageSlots[idx].width = 0
+    imageSlots[idx].height = 0
+
+proc x11DrawImage(img: screen.Image; src, dst: coords.Rect) =
+  let idx = img.int - 1
+  if idx < 0 or idx >= imageCount: return
+  let slot = imageSlots[idx]
+  if slot.pixels.len == 0 or gBackPixmap == None: return
+
+  let srcX = max(0, src.x)
+  let srcY = max(0, src.y)
+  let srcW = min(src.w, slot.width - srcX)
+  let srcH = min(src.h, slot.height - srcY)
+  if srcW <= 0 or srcH <= 0: return
+
+  # Create XImage from RGBA pixels
+  var imgData = newSeq[uint8](srcW * srcH * 4)
+  for y in 0..<srcH:
+    let srcRow = (srcY + y) * slot.width * 4 + srcX * 4
+    let dstRow = y * srcW * 4
+    copyMem(addr imgData[dstRow], unsafeAddr slot.pixels[srcRow], srcW * 4)
+
+  let xImg = XCreateImage(gDisplay, gVisual, gDepth.cuint, 2, # ZPixmap
+    0, cast[pointer](addr imgData[0]),
+    srcW.cint, srcH.cint, 32, (srcW * 4).cint)
+  if xImg != nil:
+    discard XPutImage(gDisplay, gBackPixmap, gGC, xImg,
+      0.cint, 0.cint, dst.x.cint, dst.y.cint, srcW.cuint, srcH.cuint)
+    # XImage data is borrowed, don't free pixels yet
+    xImg.data = nil  # prevent XDestroyImage from freeing our seq
+    discard XDestroyImage(xImg)
+  discard imgData  # free after XPutImage is done
+
 
 # ---- Init ----
 
@@ -949,7 +1130,8 @@ proc initX11Driver*() =
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,
     drawText: x11DrawText)
   drawRelays = DrawRelays(
-    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint)
+    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
+    loadImage: x11LoadImage, freeImage: x11FreeImage, drawImage: x11DrawImage)
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,

@@ -128,6 +128,7 @@ const
   WM_PAINT = 0x000F'u32
   WM_CLOSE = 0x0010'u32
   WM_QUIT = 0x0012'u32
+  WM_SETCURSOR = 0x0020'u32
   WM_ERASEBKGND = 0x0014'u32
   WM_KEYDOWN = 0x0100'u32
   WM_KEYUP = 0x0101'u32
@@ -428,6 +429,7 @@ var
   gWidth, gHeight: int32
   gQuitFlag: bool
   gSavedClipRgn: HRGN
+  gCurrentCursor: HCURSOR
 
 # Event queue: WndProc pushes events, pollEvent/waitEvent consumes them
 var eventQueue: seq[input.Event]
@@ -639,6 +641,12 @@ proc wndProc(hwnd: HWND; msg: UINT; wp: WPARAM; lp: LPARAM): LRESULT {.stdcall.}
     pushEvent(e)
     return 0
 
+  of WM_SETCURSOR:
+    if loWord(lp) == 1: # HTCLIENT
+      discard SetCursorWin(gCurrentCursor)
+      return 1
+    return DefWindowProcW(hwnd, msg, wp, lp)
+
   else:
     discard
 
@@ -656,6 +664,7 @@ proc winCreateWindow(layout: var ScreenLayout) =
   wc.lpfnWndProc = wndProc
   wc.hInstance = gHinstance
   wc.hCursor = LoadCursorW(nil, IDC_ARROW)
+  gCurrentCursor = wc.hCursor
   wc.lpszClassName = cast[ptr uint16](className[0].addr)
 
   discard RegisterClassExW(addr wc)
@@ -872,6 +881,7 @@ proc winSetCursor(c: CursorKind) =
     of curSizeNS: IDC_SIZENS
     of curSizeWE: IDC_SIZEWE
   let cur = LoadCursorW(nil, id)
+  gCurrentCursor = cur
   discard SetCursorWin(cur)
 
 proc winSetWindowTitle(title: string) =

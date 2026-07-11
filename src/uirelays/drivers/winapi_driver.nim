@@ -974,10 +974,19 @@ proc winLoadImage(path: string): screen.Image =
 proc winCreateImage(data: pointer; w, h: int): screen.Image =
   if data == nil or w <= 0 or h <= 0 or imageCount >= MAX_GDI_IMAGES:
     return screen.Image(0)
-  # Create GDI+ bitmap from RGBA pixel data (format 26 = PixelFormat32bppARGB)
+  # Pixie uses RGBA; GDI+ 32bpp ARGB expects BGRA. Swap R and B.
+  let size = w * h * 4
+  var bgra = newSeq[uint8](size)
+  let src = cast[ptr UncheckedArray[uint8]](data)
+  for i in 0 ..< w * h:
+    bgra[i * 4 + 0] = src[i * 4 + 2] # B
+    bgra[i * 4 + 1] = src[i * 4 + 1] # G
+    bgra[i * 4 + 2] = src[i * 4 + 0] # R
+    bgra[i * 4 + 3] = src[i * 4 + 3] # A
   var bmp: GpBitmap = nil
+  # PixelFormat32bppARGB = 0x26200A
   let status = GdipCreateBitmapFromScan0(w.int32, h.int32, (w * 4).int32,
-    26, data, addr bmp)
+    0x26200A, addr bgra[0], addr bmp)
   if status != 0 or bmp == nil:
     return screen.Image(0)
   let idx = imageCount

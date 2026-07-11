@@ -338,6 +338,9 @@ proc GdiplusStartup(token: ptr uint32; input: pointer; output: pointer): GpStatu
 proc GdiplusShutdown(token: uint32) {.stdcall, dynlib: "gdiplus", importc.}
 proc GdipCreateBitmapFromFile(wFileName: ptr uint16; bitmap: ptr GpBitmap): GpStatus
   {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipCreateBitmapFromScan0(width, height: int32; stride: int32;
+  format: int32; scan0: pointer; bitmap: ptr GpBitmap): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
 proc GdipDisposeImage(image: pointer): GpStatus
   {.stdcall, dynlib: "gdiplus", importc.}
 proc GdipGetImageWidth(image: pointer; width: ptr uint32): GpStatus
@@ -968,6 +971,20 @@ proc winLoadImage(path: string): screen.Image =
   inc imageCount
   return screen.Image(idx + 1) # 1-based
 
+proc winCreateImage(data: pointer; w, h: int): screen.Image =
+  if data == nil or w <= 0 or h <= 0 or imageCount >= MAX_GDI_IMAGES:
+    return screen.Image(0)
+  # Create GDI+ bitmap from RGBA pixel data (format 26 = PixelFormat32bppARGB)
+  var bmp: GpBitmap = nil
+  let status = GdipCreateBitmapFromScan0(w.int32, h.int32, (w * 4).int32,
+    26, data, addr bmp)
+  if status != 0 or bmp == nil:
+    return screen.Image(0)
+  let idx = imageCount
+  imageSlots[idx] = ImageSlot(bitmap: bmp, width: w.int32, height: h.int32)
+  inc imageCount
+  return screen.Image(idx + 1)
+
 proc winFreeImage(img: screen.Image) =
   let idx = img.int - 1
   if idx >= 0 and idx < imageCount and imageSlots[idx].bitmap != nil:
@@ -1037,7 +1054,8 @@ proc initWinapiDriver*() =
     drawText: winDrawText)
   drawRelays = DrawRelays(
     fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint,
-    loadImage: winLoadImage, freeImage: winFreeImage, drawImage: winDrawImage)
+    loadImage: winLoadImage, createImage: winCreateImage,
+    freeImage: winFreeImage, drawImage: winDrawImage)
   inputRelays = InputRelays(
     pollEvent: winPollEvent, waitEvent: winWaitEvent,
     getTicks: winGetTicks, sleep: winDelay,

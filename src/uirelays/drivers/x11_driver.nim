@@ -1079,6 +1079,16 @@ proc x11LoadImage(path: string): screen.Image =
   inc imageCount
   return screen.Image(idx + 1)
 
+proc x11CreateImage(data: pointer; w, h: int): screen.Image =
+  if data == nil or w <= 0 or h <= 0 or imageCount >= MAX_IMAGES:
+    return screen.Image(0)
+  var pixels = newSeq[uint8](w * h * 4)
+  copyMem(addr pixels[0], data, w * h * 4)
+  let idx = imageCount
+  imageSlots[idx] = ImageSlot(pixels: pixels, width: w, height: h)
+  inc imageCount
+  return screen.Image(idx + 1)
+
 proc x11FreeImage(img: screen.Image) =
   let idx = img.int - 1
   if idx >= 0 and idx < imageCount:
@@ -1131,7 +1141,8 @@ proc initX11Driver*() =
     drawText: x11DrawText)
   drawRelays = DrawRelays(
     fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
-    loadImage: x11LoadImage, freeImage: x11FreeImage, drawImage: x11DrawImage)
+    loadImage: x11LoadImage, createImage: x11CreateImage,
+    freeImage: x11FreeImage, drawImage: x11DrawImage)
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,

@@ -49,6 +49,7 @@ type
     drawLine*: proc (x1, y1, x2, y2: int; color: Color) {.nimcall.}
     drawPoint*: proc (x, y: int; color: Color) {.nimcall.}
     loadImage*: proc (path: string): Image {.nimcall.}
+    createImage*: proc (data: pointer; w, h: int): Image {.nimcall.}
     freeImage*: proc (img: Image) {.nimcall.}
     drawImage*: proc (img: Image; src, dst: Rect) {.nimcall.}
 
@@ -77,6 +78,7 @@ var drawRelays* = DrawRelays(
   drawLine: proc (x1, y1, x2, y2: int; color: Color) = discard,
   drawPoint: proc (x, y: int; color: Color) = discard,
   loadImage: proc (path: string): Image = Image(0),
+  createImage: proc (data: pointer; w, h: int): Image = Image(0),
   freeImage: proc (img: Image) = discard,
   drawImage: proc (img: Image; src, dst: Rect) = discard)
 
@@ -108,6 +110,9 @@ proc drawLine*(x1, y1, x2, y2: int; color: Color) =
 proc drawPoint*(x, y: int; color: Color) = drawRelays.drawPoint(x, y, color)
 proc loadImage*(path: string): Image =
   if drawRelays.loadImage != nil: drawRelays.loadImage(path)
+  else: Image(0)
+proc createImage*(data: pointer; w, h: int): Image =
+  if drawRelays.createImage != nil: drawRelays.createImage(data, w, h)
   else: Image(0)
 proc freeImage*(img: Image) =
   if drawRelays.freeImage != nil: drawRelays.freeImage(img)

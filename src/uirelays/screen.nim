@@ -106,9 +106,13 @@ proc fillRect*(r: Rect; color: Color) = drawRelays.fillRect(r, color)
 proc drawLine*(x1, y1, x2, y2: int; color: Color) =
   drawRelays.drawLine(x1, y1, x2, y2, color)
 proc drawPoint*(x, y: int; color: Color) = drawRelays.drawPoint(x, y, color)
-proc loadImage*(path: string): Image = drawRelays.loadImage(path)
-proc freeImage*(img: Image) = drawRelays.freeImage(img)
-proc drawImage*(img: Image; src, dst: Rect) = drawRelays.drawImage(img, src, dst)
+proc loadImage*(path: string): Image =
+  if drawRelays.loadImage != nil: drawRelays.loadImage(path)
+  else: Image(0)
+proc freeImage*(img: Image) =
+  if drawRelays.freeImage != nil: drawRelays.freeImage(img)
+proc drawImage*(img: Image; src, dst: Rect) =
+  if drawRelays.drawImage != nil: drawRelays.drawImage(img, src, dst)
 
 # Color constructors
 proc color*(r, g, b: uint8; a: uint8 = 255): Color =

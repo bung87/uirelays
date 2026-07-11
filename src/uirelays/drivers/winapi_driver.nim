@@ -376,6 +376,29 @@ proc GdipSetCompositingMode(graphics: GpGraphics; mode: int32): GpStatus
 proc GdipSetInterpolationMode(graphics: GpGraphics; mode: int32): GpStatus
   {.stdcall, dynlib: "gdiplus", importc.}
 
+type
+  BitmapData {.pure.} = object
+    width: uint32
+    height: uint32
+    stride: int32
+    pixelFormat: int32
+    scan0: pointer
+    reserved: uint32
+
+const
+  ImageLockModeRead = 1
+
+proc GdipBitmapLockBits(bitmap: GpBitmap; rect: pointer; flags: uint32;
+  format: int32; lockedBitmapData: ptr BitmapData): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipBitmapUnlockBits(bitmap: GpBitmap; lockedBitmapData: ptr BitmapData): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+
+# PixelFormat constants
+const
+  PixelFormat32bppARGB = 0x26200A
+  PixelFormat32bppPARGB = 0x26200B
+
 # ---- AlphaBlend (msimg32) ----
 proc AlphaBlend(hdcDst: HDC; xoriginDest, yoriginDest, wDest, hDest: int32;
   hdcSrc: HDC; xoriginSrc, yoriginSrc, wSrc, hSrc: int32;
@@ -387,13 +410,14 @@ const MAX_GDI_IMAGES = 256
 
 type
   ImageSlot = object
-    bitmap: GpBitmap
+    hbitmap: HBITMAP
+    gpBitmap: GpBitmap
     width, height: int32
 
 var
-  gdiplusToken: uint32
-  imageSlots: array[MAX_GDI_IMAGES, ImageSlot]
   imageCount: int
+  imageSlots: array[MAX_GDI_IMAGES, ImageSlot]
+  gdiplusToken: uint32
 
 # ---- Helpers ----
 
@@ -454,8 +478,7 @@ proc recreateBackBuffer() =
   else:
     gOldBmp = SelectObject(gBackDC, cast[HGDIOBJ](newBmp))
   gBackBmp = newBmp
-  # Clear to opaque black -- CreateCompatibleBitmap inits to all zeros which
-  # DWM interprets as fully transparent on 32-bit displays.
+  # Clear to opaque black
   var rc = WINAPIRECT(left: 0, top: 0, right: gWidth, bottom: gHeight)
   let blackBrush = CreateSolidBrush(0x00000000'u32)
   discard FillRectGdi(gBackDC, addr rc, blackBrush)
@@ -987,67 +1010,123 @@ proc winLoadImage(path: string): screen.Image =
   var w, h: uint32
   discard GdipGetImageWidth(bmp, addr w)
   discard GdipGetImageHeight(bmp, addr h)
+  # Lock with ARGB (straight alpha)
+  var bd: BitmapData
+  if GdipBitmapLockBits(bmp, nil, ImageLockModeRead,
+       PixelFormat32bppARGB, addr bd) != 0 or bd.scan0 == nil:
+    discard GdipDisposeImage(bmp)
+    return screen.Image(0)
+  # Create DIB section for alpha-preserving pixel storage
+  let iw = w.int32
+  let ih = h.int32
+  var bmi: array[10, uint32]
+  bmi[0] = 40
+  bmi[1] = iw.uint32
+  bmi[2] = cast[uint32](-ih)
+  bmi[3] = 1 or (32 shl 16)
+  bmi[4] = 0
+  var bits: pointer = nil
+  let screenDC = GetDC(cast[HWND](0))
+  let hbm = CreateDIBSection(screenDC, addr bmi[0], 0, addr bits, nil, 0)
+  discard ReleaseDC(cast[HWND](0), screenDC)
+  if hbm == nil or bits == nil:
+    discard GdipBitmapUnlockBits(bmp, addr bd)
+    discard GdipDisposeImage(bmp)
+    return screen.Image(0)
+  # Copy from GDI+ ARGB (straight BGRA) to DIB (premultiplied BGRA)
+  let src = cast[ptr UncheckedArray[uint8]](bd.scan0)
+  let dst = cast[ptr UncheckedArray[uint8]](bits)
+  for row in 0 ..< ih:
+    let srcRow = row * bd.stride
+    let dstRow = row * iw * 4
+    for col in 0 ..< iw:
+      let si = srcRow + col * 4
+      let di = dstRow + col * 4
+      let b = src[si]; let g = src[si + 1]; let r = src[si + 2]; let a = src[si + 3]
+      if a == 255:
+        dst[di] = b; dst[di + 1] = g; dst[di + 2] = r; dst[di + 3] = 255
+      elif a == 0:
+        dst[di] = 0; dst[di + 1] = 0; dst[di + 2] = 0; dst[di + 3] = 0
+      else:
+        dst[di] = (b.uint16 * a.uint16 div 255).uint8
+        dst[di + 1] = (g.uint16 * a.uint16 div 255).uint8
+        dst[di + 2] = (r.uint16 * a.uint16 div 255).uint8
+        dst[di + 3] = a
+  discard GdipBitmapUnlockBits(bmp, addr bd)
+  discard GdipDisposeImage(bmp)
+  # Create GpBitmap from DIB (preserves alpha on Win7+)
+  var gpBmp: GpBitmap = nil
+  if GdipCreateBitmapFromHBITMAP(hbm, nil, addr gpBmp) != 0:
+    discard DeleteObject(cast[HGDIOBJ](hbm))
+    return screen.Image(0)
   let idx = imageCount
-  imageSlots[idx] = ImageSlot(bitmap: bmp, width: w.int32, height: h.int32)
+  imageSlots[idx] = ImageSlot(hbitmap: hbm, gpBitmap: gpBmp, width: iw, height: ih)
   inc imageCount
-  return screen.Image(idx + 1) # 1-based
+  return screen.Image(idx + 1)
 
 proc winCreateImage(data: pointer; w, h: int): screen.Image =
   if data == nil or w <= 0 or h <= 0 or imageCount >= MAX_GDI_IMAGES:
     return screen.Image(0)
-  # Pixie stores premultiplied-alpha RGBA as ColorRGBX(r,g,b,a).
-  # GDI+ PixelFormat32bppPARGB expects BGRA byte order in memory.
-  let size = w * h * 4
-  var bgra = newSeq[uint8](size)
+  # Create 32bpp DIB section (BI_RGB) — byte order is B,G,R,A on little-endian
+  var bmi: array[10, uint32]
+  bmi[0] = 40
+  bmi[1] = w.uint32
+  bmi[2] = cast[uint32](-h)
+  bmi[3] = 1 or (32 shl 16)
+  bmi[4] = 0
+  var bits: pointer = nil
+  let screenDC = GetDC(cast[HWND](0))
+  let hbm = CreateDIBSection(screenDC, addr bmi[0], 0, addr bits, nil, 0)
+  discard ReleaseDC(cast[HWND](0), screenDC)
+  if hbm == nil or bits == nil:
+    return screen.Image(0)
+  # Pixie stores premultiplied RGBA [R,G,B,A]; DIB expects [B,G,R,A]
   let src = cast[ptr UncheckedArray[uint8]](data)
+  let dst = cast[ptr UncheckedArray[uint8]](bits)
   for i in 0 ..< w * h:
-    bgra[i * 4 + 0] = src[i * 4 + 2] # B
-    bgra[i * 4 + 1] = src[i * 4 + 1] # G
-    bgra[i * 4 + 2] = src[i * 4 + 0] # R
-    bgra[i * 4 + 3] = src[i * 4 + 3] # A
-  var bmp: GpBitmap = nil
-  # PixelFormat32bppARGB = 0x26200A
-  let status = GdipCreateBitmapFromScan0(w.int32, h.int32, (w * 4).int32,
-    0x26200A, addr bgra[0], addr bmp)
-  if status != 0 or bmp == nil:
+    dst[i * 4 + 0] = src[i * 4 + 2]
+    dst[i * 4 + 1] = src[i * 4 + 1]
+    dst[i * 4 + 2] = src[i * 4 + 0]
+    dst[i * 4 + 3] = src[i * 4 + 3]
+  # Create GpBitmap from DIB (preserves alpha on Win7+)
+  var gpBmp: GpBitmap = nil
+  if GdipCreateBitmapFromHBITMAP(hbm, nil, addr gpBmp) != 0:
+    discard DeleteObject(cast[HGDIOBJ](hbm))
     return screen.Image(0)
   let idx = imageCount
-  imageSlots[idx] = ImageSlot(bitmap: bmp, width: w.int32, height: h.int32)
+  imageSlots[idx] = ImageSlot(hbitmap: hbm, gpBitmap: gpBmp, width: w.int32, height: h.int32)
   inc imageCount
   return screen.Image(idx + 1)
 
 proc winFreeImage(img: screen.Image) =
   let idx = img.int - 1
-  if idx >= 0 and idx < imageCount and imageSlots[idx].bitmap != nil:
-    discard GdipDisposeImage(imageSlots[idx].bitmap)
-    imageSlots[idx].bitmap = nil
+  if idx >= 0 and idx < imageCount:
+    if imageSlots[idx].gpBitmap != nil:
+      discard GdipDisposeImage(imageSlots[idx].gpBitmap)
+      imageSlots[idx].gpBitmap = nil
+    if imageSlots[idx].hbitmap != nil:
+      discard DeleteObject(cast[HGDIOBJ](imageSlots[idx].hbitmap))
+      imageSlots[idx].hbitmap = nil
 
 proc winDrawImage(img: screen.Image; src, dst: coords.Rect) =
   let idx = img.int - 1
-  if idx < 0 or idx >= imageCount or imageSlots[idx].bitmap == nil: return
+  if idx < 0 or idx >= imageCount or imageSlots[idx].gpBitmap == nil: return
   if gBackDC == nil: return
-
-  var graphics: GpGraphics = nil
-  if GdipCreateFromHDC(gBackDC, addr graphics) != 0 or graphics == nil: return
-
-  discard GdipSetCompositingMode(graphics, 0)     # CompositingModeSourceOver
-  discard GdipSetInterpolationMode(graphics, 7)    # InterpolationModeHighQualityBicubic
-
   let slot = imageSlots[idx]
   # Clamp source rect to image bounds
   let srcX = max(0, src.x).float32
   let srcY = max(0, src.y).float32
   let srcW = min(src.w.float32, slot.width.float32 - srcX)
   let srcH = min(src.h.float32, slot.height.float32 - srcY)
-  if srcW <= 0 or srcH <= 0:
-    discard GdipDeleteGraphics(graphics)
-    return
-
-  discard GdipDrawImageRectRect(graphics, slot.bitmap,
+  if srcW <= 0 or srcH <= 0: return
+  var graphics: GpGraphics = nil
+  if GdipCreateFromHDC(gBackDC, addr graphics) != 0 or graphics == nil: return
+  discard GdipSetCompositingMode(graphics, 0)     # CompositingModeSourceOver
+  discard GdipSetInterpolationMode(graphics, 7)    # InterpolationModeHighQualityBicubic
+  discard GdipDrawImageRectRect(graphics, slot.gpBitmap,
     dst.x.float32, dst.y.float32, dst.w.float32, dst.h.float32,
     srcX, srcY, srcW, srcH,
-    2, # UnitPixel
-    nil, nil, nil)
+    2, nil, nil, nil)
   discard GdipDeleteGraphics(graphics)
 
 # ---- Init ----

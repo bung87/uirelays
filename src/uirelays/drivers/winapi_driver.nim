@@ -812,8 +812,11 @@ proc winDrawText(f: screen.Font; x, y: int; text: string;
   let hf = getFontHandle(f)
   if hf == nil or text.len == 0: return
   let oldFont = SelectObject(gBackDC, cast[HGDIOBJ](hf))
-  discard SetBkMode(gBackDC, OPAQUE)
-  discard SetBkColor(gBackDC, rgb(bg))
+  if bg.a == 0:
+    discard SetBkMode(gBackDC, TRANSPARENT)
+  else:
+    discard SetBkMode(gBackDC, OPAQUE)
+    discard SetBkColor(gBackDC, rgb(bg))
   discard SetTextColor(gBackDC, rgb(fg))
   let wtext = newWideCString(text)
   let wlen = wtext.len.int32

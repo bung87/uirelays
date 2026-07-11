@@ -371,6 +371,10 @@ proc GdipCreateBitmapFromHBITMAP(hbm: HBITMAP; palette: HPALETTE;
 proc GdipCreateBitmapFromGraphics(width, height: int32;
   graphics: GpGraphics; bitmap: ptr GpBitmap): GpStatus
   {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipSetCompositingMode(graphics: GpGraphics; mode: int32): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
+proc GdipSetInterpolationMode(graphics: GpGraphics; mode: int32): GpStatus
+  {.stdcall, dynlib: "gdiplus", importc.}
 
 # ---- AlphaBlend (msimg32) ----
 proc AlphaBlend(hdcDst: HDC; xoriginDest, yoriginDest, wDest, hDest: int32;
@@ -1040,6 +1044,9 @@ proc winDrawImage(img: screen.Image; src, dst: coords.Rect) =
 
   var graphics: GpGraphics = nil
   if GdipCreateFromHDC(gBackDC, addr graphics) != 0 or graphics == nil: return
+
+  discard GdipSetCompositingMode(graphics, 0)     # CompositingModeSourceOver
+  discard GdipSetInterpolationMode(graphics, 7)    # InterpolationModeHighQualityBicubic
 
   let slot = imageSlots[idx]
   # Clamp source rect to image bounds

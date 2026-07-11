@@ -1006,9 +1006,9 @@ proc winCreateImage(data: pointer; w, h: int): screen.Image =
     bgra[i * 4 + 2] = src[i * 4 + 0] # R
     bgra[i * 4 + 3] = src[i * 4 + 3] # A
   var bmp: GpBitmap = nil
-  # PixelFormat32bppPARGB (premultiplied) = 0x26200B
+  # PixelFormat32bppARGB = 0x26200A
   let status = GdipCreateBitmapFromScan0(w.int32, h.int32, (w * 4).int32,
-    0x26200B, addr bgra[0], addr bmp)
+    0x26200A, addr bgra[0], addr bmp)
   if status != 0 or bmp == nil:
     return screen.Image(0)
   let idx = imageCount

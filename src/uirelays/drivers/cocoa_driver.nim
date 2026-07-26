@@ -81,10 +81,6 @@ proc cFillRect(x, y, w, h: cint; r, g, b, a: cint) {.importc: "cocoa_fillRect", 
 proc cDrawLine(x1, y1, x2, y2: cint; r, g, b, a: cint) {.importc: "cocoa_drawLine", cdecl.}
 proc cDrawPoint(x, y: cint; r, g, b, a: cint) {.importc: "cocoa_drawPoint", cdecl.}
 
-proc cLoadImage(path: cstring): cint {.importc: "cocoa_loadImage", cdecl.}
-proc cDrawImage(handle, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH: cint)
-  {.importc: "cocoa_drawImage", cdecl.}
-
 proc cSetClipRect(x, y, w, h: cint) {.importc: "cocoa_setClipRect", cdecl.}
 proc cSaveState() {.importc: "cocoa_saveState", cdecl.}
 proc cRestoreState() {.importc: "cocoa_restoreState", cdecl.}
@@ -100,6 +96,107 @@ proc cSetCursor(kind: cint) {.importc: "cocoa_setCursor", cdecl.}
 proc cSetWindowTitle(title: cstring) {.importc: "cocoa_setWindowTitle", cdecl.}
 proc cStartTextInput() {.importc: "cocoa_startTextInput", cdecl.}
 proc cShutdown() {.importc: "cocoa_shutdown", cdecl.}
+
+proc cocoaGetBackingContext(): pointer {.importc: "cocoa_getBackingContext", cdecl.}
+
+# --- Core Graphics image management (pure Nim, no ObjC) ---
+
+type
+  CGImageRef = pointer
+  CGColorSpaceRef = pointer
+  CGContextRef = pointer
+
+proc cocoaLoadImageC(path: cstring): CGImageRef {.importc: "cocoa_loadImage", cdecl.}
+proc CGImageGetWidth(img: CGImageRef): culong {.importc: "CGImageGetWidth", cdecl.}
+proc CGImageGetHeight(img: CGImageRef): culong {.importc: "CGImageGetHeight", cdecl.}
+proc CGImageRelease(img: CGImageRef) {.importc: "CGImageRelease", cdecl.}
+proc CGColorSpaceCreateDeviceRGB(): CGColorSpaceRef {.importc: "CGColorSpaceCreateDeviceRGB", cdecl.}
+proc CGColorSpaceRelease(space: CGColorSpaceRef) {.importc: "CGColorSpaceRelease", cdecl.}
+proc CGBitmapContextCreate(data: pointer; width, height: culong; bitsPerComponent, bytesPerRow: culong;
+                           space: CGColorSpaceRef; bitmapInfo: uint32): CGContextRef
+  {.importc: "CGBitmapContextCreate", cdecl.}
+proc CGBitmapContextGetData(ctx: CGContextRef): pointer {.importc: "CGBitmapContextGetData", cdecl.}
+proc CGBitmapContextCreateImage(ctx: CGContextRef): CGImageRef {.importc: "CGBitmapContextCreateImage", cdecl.}
+proc CGContextRelease(ctx: CGContextRef) {.importc: "CGContextRelease", cdecl.}
+proc CGContextSaveGState(ctx: pointer) {.importc: "CGContextSaveGState", cdecl.}
+proc CGContextRestoreGState(ctx: pointer) {.importc: "CGContextRestoreGState", cdecl.}
+proc CGContextClipToRect(ctx: pointer; x, y, w, h: cdouble) {.importc: "CGContextClipToRect", cdecl.}
+proc CGContextTranslateCTM(ctx: pointer; tx, ty: cdouble) {.importc: "CGContextTranslateCTM", cdecl.}
+proc CGContextScaleCTM(ctx: pointer; sx, sy: cdouble) {.importc: "CGContextScaleCTM", cdecl.}
+proc CGContextDrawImage(ctx: pointer; x, y, w, h: cdouble; img: CGImageRef)
+  {.importc: "CGContextDrawImage", cdecl.}
+
+const
+  MaxImages = 128
+
+var
+  imageSlots: array[MaxImages, CGImageRef]
+  imageCount: int
+
+proc cocoaLoadImage(path: string): Image =
+  if path.len == 0 or imageCount >= MaxImages:
+    return Image(0)
+  let cgImage = cocoaLoadImageC(cstring(path))
+  if cgImage == nil: return Image(0)
+  let idx = imageCount
+  imageSlots[idx] = cgImage
+  inc imageCount
+  result = Image(idx + 1)
+
+proc cocoaCreateImage(data: pointer; w, h: int): Image =
+  if data == nil or w <= 0 or h <= 0 or imageCount >= MaxImages:
+    return Image(0)
+  let cs = CGColorSpaceCreateDeviceRGB()
+  # kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast = 0x4001
+  # Pixie stores ColorRGBX as [R,G,B,A] in memory, which matches big-endian RGBA
+  let ctx = CGBitmapContextCreate(nil, culong(w), culong(h), 8, culong(w * 4), cs, 0x4001)
+  CGColorSpaceRelease(cs)
+  if ctx == nil: return Image(0)
+  let buf = CGBitmapContextGetData(ctx)
+  if buf == nil:
+    CGContextRelease(ctx)
+    return Image(0)
+  copyMem(buf, data, culong(w * h * 4))
+  let cgImage = CGBitmapContextCreateImage(ctx)
+  CGContextRelease(ctx)
+  if cgImage == nil: return Image(0)
+  let idx = imageCount
+  imageSlots[idx] = cgImage
+  inc imageCount
+  result = Image(idx + 1)
+
+proc cocoaFreeImage(img: Image) =
+  let idx = img.int - 1
+  if idx >= 0 and idx < imageCount and imageSlots[idx] != nil:
+    CGImageRelease(imageSlots[idx])
+    imageSlots[idx] = nil
+
+proc cocoaDrawImage(img: Image; src, dst: Rect) =
+  let idx = img.int - 1
+  if idx < 0 or idx >= imageCount: return
+  let cgImage = imageSlots[idx]
+  let ctx = cocoaGetBackingContext()
+  if cgImage == nil or ctx == nil: return
+  let imgW = CGImageGetWidth(cgImage).cdouble
+  let imgH = CGImageGetHeight(cgImage).cdouble
+  let srcX = src.x.cdouble
+  let srcY = src.y.cdouble
+  let srcW = src.w.cdouble
+  let srcH = src.h.cdouble
+  let dstX = dst.x.cdouble
+  let dstY = dst.y.cdouble
+  let dstW = dst.w.cdouble
+  let dstH = dst.h.cdouble
+  CGContextSaveGState(ctx)
+  CGContextClipToRect(ctx, dstX, dstY, dstW, dstH)
+  let scaleX = dstW / srcW
+  let scaleY = dstH / srcH
+  CGContextTranslateCTM(ctx, dstX - srcX * scaleX, dstY - srcY * scaleY)
+  CGContextScaleCTM(ctx, scaleX, scaleY)
+  CGContextTranslateCTM(ctx, 0, imgH)
+  CGContextScaleCTM(ctx, 1.0, -1.0)
+  CGContextDrawImage(ctx, 0, 0, imgW, imgH, cgImage)
+  CGContextRestoreGState(ctx)
 
 # --- Relay implementations ---
 
@@ -118,15 +215,6 @@ proc cocoaRestoreState() = cRestoreState()
 
 proc cocoaSetClipRect(r: Rect) =
   cSetClipRect(r.x.cint, r.y.cint, r.w.cint, r.h.cint)
-
-proc cocoaLoadImage(path: string): Image =
-  let handle = cLoadImage(path.cstring)
-  result = Image(handle)
-
-proc cocoaDrawImage(img: Image; src, dst: Rect) =
-  cDrawImage(img.int.cint,
-             src.x.cint, src.y.cint, src.w.cint, src.h.cint,
-             dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint)
 
 proc cocoaOpenFont(path: string; size: int;
                    metrics: var FontMetrics): Font =
@@ -285,7 +373,8 @@ proc initCocoaDriver*() =
   drawRelays = DrawRelays(
     fillRect: cocoaFillRect, drawLine: cocoaDrawLine,
     drawPoint: cocoaDrawPoint,
-    loadImage: cocoaLoadImage, drawImage: cocoaDrawImage)
+    loadImage: cocoaLoadImage, createImage: cocoaCreateImage,
+    freeImage: cocoaFreeImage, drawImage: cocoaDrawImage)
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
     getTicks: cocoaGetTicks, sleep: cocoaDelay,

@@ -1063,7 +1063,7 @@ proc downFirstLineOffset(s: var SynEdit) =
 
 proc scrollLines*(s: var SynEdit; amount: int) =
   let oldFirstLine = s.firstLine
-  s.firstLine = clamp(s.firstLine.int + amount, 0, max(0, s.numberOfLines.int - 1)).Natural
+  s.firstLine = clamp(s.firstLine.int + amount, 0, max(0, s.numberOfLines.int - max(s.span, 1))).Natural
   var a = s.firstLine.int - oldFirstLine.int
   if a < 0:
     while a < 0: s.upFirstLineOffset(); inc a
@@ -2256,7 +2256,7 @@ proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   let ratio = float(area.h) / contentH
   let gripH = clamp(int(trackH * ratio), 20, int(trackH))
   let scrollArea = trackH - float(gripH)
-  let maxScroll = float(totalLines - s.span)
+  let maxScroll = float(max(0, s.numberOfLines.int - max(s.span, 1)))
   let posRatio = if maxScroll > 0: float(s.firstLine) / maxScroll else: 0.0
   let gripY = clamp(int(scrollArea * posRatio) + area.y + 1,
                      area.y + 1, area.y + area.h - gripH - 1)
@@ -2489,7 +2489,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
       if trackScrollArea > 0:
         let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
         let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
-        let maxScroll = totalLines - s.span
+        let maxScroll = max(0, s.numberOfLines.int - max(s.span, 1))
         let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
         s.scrollLines(target - s.firstLine.int)
 

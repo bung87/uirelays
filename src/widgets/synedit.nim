@@ -2030,10 +2030,9 @@ type
     chars: array[CharBufSize, char]
     toCursor: array[CharBufSize, int]
 
-proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
+proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color; ext: TextExtent) =
   db.tempStr.setLen 0
   for k in ra..rb: db.tempStr.add db.chars[k]
-  let ext = measureText(db.font, db.tempStr)
   var d = db.dim
   d.w = ext.w
   d.h = ext.h
@@ -2103,7 +2102,7 @@ proc drawToken(db: var DrawBuf; fg, bg: Color) =
   let ext = measureText(db.font, db.tempStr)
   let w = ext.w
   if db.dim.x + w + db.spaceWidth <= db.dim.w:
-    drawSubtoken(db, 0, db.charsLen - 1, fg, bg)
+    drawSubtoken(db, 0, db.charsLen - 1, fg, bg, ext)
     db.dim.x += w
   else:
     # wrapping: just draw what fits, then continue on next line
@@ -2123,7 +2122,7 @@ proc drawToken(db: var DrawBuf; fg, bg: Color) =
       db.tempStr.setLen 0
       for k in ra..rb: db.tempStr.add db.chars[k]
       let ext2 = textWidth(db.font, db.tempStr)
-      drawSubtoken(db, ra, rb, fg, bg)
+      drawSubtoken(db, ra, rb, fg, bg, TextExtent(w: ext2, h: ext.h))
       db.dim.x += ext2
       ra = probe
       if ra < db.charsLen:
